@@ -1,0 +1,17 @@
+name: Probe Recorder Access
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe recorder port 8443
+        run: |
+          set -e
+          URL="https://recorder.humboldtcountynv.gov:8443/"
+          echo "Fetching: $URL"
+          curl -I -L --max-time 30 "$URL" || true
+          echo "---- body (first 60 lines) ----"
+          curl -L --max-time 30 "$URL" | sed -n '1,60p' || true
