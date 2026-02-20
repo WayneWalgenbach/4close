@@ -1,24 +1,29 @@
 {% extends "base.html" %}
 {% block content %}
-  <h1 class="h4 mb-3">Import Recorder Results (CSV)</h1>
-  <div class="card">
-    <div class="card-body">
-      <form method="post" enctype="multipart/form-data">
-        <div class="mb-3">
-          <label class="form-label">CSV file</label>
-          <input class="form-control" type="file" name="file" accept=".csv,text/csv">
+  <div class="box">
+    <div class="section-title">Import Recorder Results (CSV)</div>
+
+    <div class="muted">
+      Required headers: <b>stage, address, city, state</b><br>
+      Recommended: <b>apn, zip, record_date, doc_type, source_url</b>
+    </div>
+
+    <div class="muted" style="margin-top:8px;">
+      Stage values to use: <b>PRE_FORECLOSURE</b>, <b>FORECLOSURE_SALE</b>, <b>REO</b>
+    </div>
+
+    <div style="margin-top:10px;">
+      <form method="post" enctype="multipart/form-data" action="{{ url_for('import_csv_post') }}">
+        <div class="row">
+          <input class="btn" style="background:#fff;" type="file" name="file" accept=".csv,text/csv">
+          <button class="btn" type="submit">Upload CSV</button>
+          <a class="btn" href="/">Back</a>
         </div>
-        <button class="btn btn-primary" type="submit">Import</button>
-        <a class="btn btn-outline-secondary" href="{{ url_for('index') }}">Back</a>
       </form>
-      <hr/>
-      <div class="small">
-        <div class="fw-semibold mb-1">Expected headers</div>
-        <div class="mono">stage, apn, address, city, state, zip, record_date, doc_type, source_url</div>
-        <div class="muted mt-2">Stages supported:
-          {% for s,l in stages %}<span class="mono">{{s}}</span>{% if not loop.last %}, {% endif %}{% endfor %}
-        </div>
-      </div>
+    </div>
+
+    <div class="muted" style="margin-top:10px;">
+      After import, go Home and tap <b>Create Snapshot (Compare)</b>.
     </div>
   </div>
 {% endblock %}
