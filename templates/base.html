@@ -107,6 +107,14 @@
       flex-wrap:wrap;
       gap:10px;
     }
+
+    .flash{
+      border:1px solid var(--border);
+      background:#fff;
+      padding:10px;
+      border-radius:10px;
+      margin:10px 0;
+    }
   </style>
 </head>
 <body>
@@ -123,6 +131,16 @@
   </div>
 
   <hr>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="flash">
+          <b>{{ category }}</b>: {{ message }}
+        </div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
 
   {% block content %}{% endblock %}
 </body>
