@@ -1,99 +1,160 @@
 {% extends "base.html" %}
 {% block content %}
-
-  <div class="box">
-    <div class="section-title">Actions</div>
-
-    <div class="row">
-      <form method="post" action="{{ url_for('run_now') }}" style="margin:0;">
-        <button class="btn" type="submit">Create Snapshot (Compare)</button>
-      </form>
-
-      <a class="btn" href="{{ url_for('import_csv') }}">Import Recorder CSV</a>
-
-      <form method="post" action="/tax/refresh" style="margin:0;">
-        <button class="btn" type="submit">Refresh Tax List (Humboldt PDF)</button>
-      </form>
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+    <div>
+      <h1 class="h4 mb-1">Winnemucca / Humboldt County, NV</h1>
+      <div class="muted">Compares the latest run to the prior run: <span class="badge badge-new">NEW</span>, <span class="badge badge-removed">REMOVED</span>, <span class="badge badge-updated">UPDATED</span>.</div>
     </div>
 
-    <div class="muted" style="margin-top:10px;">
-      Import = Recorder rows. Refresh Tax = county parcel list. Snapshot = compare latest vs previous.
-    </div>
-
-    <div style="margin-top:10px;">
-      <span class="tag new">NEW</span>
-      <span class="tag removed">REMOVED</span>
-      <span class="tag updated">UPDATED</span>
-      <span class="tag unchanged">UNCHANGED</span>
+    <div class="d-flex gap-2 flex-wrap">
+      <form method="post" action="{{ url_for('run_now') }}">
+        <button class="btn btn-primary">Run Search</button>
+      </form>
+      <form method="post" action="{{ url_for('resolve_apns') }}">
+        <button class="btn btn-outline-secondary">Resolve APNs</button>
+      </form>
     </div>
   </div>
 
-  <div class="box">
-    <div class="section-title">Run summary</div>
-    <div class="row">
-      <div><span class="muted">Latest run:</span> <b>{{ latest.id if latest else "—" }}</b></div>
-      <div><span class="muted">Previous run:</span> <b>{{ prev.id if prev else "—" }}</b></div>
+  <div class="row g-3 mb-4">
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-body">
+          <div class="d-flex justify-content-between">
+            <div>
+              <div class="muted">Latest run</div>
+              <div class="mono">{{ latest.id if latest else "—" }}</div>
+            </div>
+            <div>
+              <div class="muted">Previous run</div>
+              <div class="mono">{{ prev.id if prev else "—" }}</div>
+            </div>
+          </div>
+          <hr/>
+          <div class="d-flex flex-wrap gap-2">
+            <span class="badge badge-new">New: {{ summary["NEW"] }}</span>
+            <span class="badge badge-updated">Updated: {{ summary["UPDATED"] }}</span>
+            <span class="badge badge-removed">Removed: {{ summary["REMOVED"] }}</span>
+            <span class="badge text-bg-secondary">Unchanged: {{ summary["UNCHANGED"] }}</span>
+          </div>
+        </div>
+      </div>
     </div>
-
-    <div class="row" style="margin-top:10px;">
-      <span class="tag new">New: {{ summary["NEW"] }}</span>
-      <span class="tag updated">Updated: {{ summary["UPDATED"] }}</span>
-      <span class="tag removed">Removed: {{ summary["REMOVED"] }}</span>
-      <span class="tag unchanged">Unchanged: {{ summary["UNCHANGED"] }}</span>
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-body">
+          <div class="muted mb-1">Configured sources</div>
+          <ul class="mb-0">
+            <li><b>Tax Delinquency</b> — seeded examples (replace with your parsed county list later)</li>
+            <li><b>Pre-Foreclosure / Foreclosure / REO</b> — import Recorder results as CSV</li>
+          </ul>
+          <div class="muted small mt-2">
+            Tip: tap <b>Resolve APNs</b> once, then Maps/Zillow will use the real situs address when available.
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
   {% if not latest %}
-    <div class="box">
-      <b>No snapshots yet.</b>
-      <div class="muted" style="margin-top:6px;">
-        Tap <b>Create Snapshot (Compare)</b> to create your baseline run.
-      </div>
-    </div>
+    <div class="alert alert-info">No runs yet. Click <b>Run Search</b> to create your first snapshot.</div>
   {% else %}
+    <div class="accordion" id="tabs">
+      {% for stage_key, stage_name in [
+        ("PRE_FORECLOSURE","Pre-Foreclosure (Recorder import)"),
+        ("FORECLOSURE_SALE","Foreclosure / Sale (Recorder import)"),
+        ("REO","REO / Bank-Owned (Recorder import)"),
+        ("TAX_DELINQUENCY","Tax Delinquency (county list examples)"),
+        ("OTHER","Other")
+      ] %}
+      <div class="accordion-item">
+        <h2 class="accordion-header" id="h-{{stage_key}}">
+          <button class="accordion-button {% if stage_key != 'PRE_FORECLOSURE' %}collapsed{% endif %}" type="button" data-bs-toggle="collapse" data-bs-target="#c-{{stage_key}}">
+            {{ stage_name }}
+          </button>
+        </h2>
+        <div id="c-{{stage_key}}" class="accordion-collapse collapse {% if stage_key == 'PRE_FORECLOSURE' %}show{% endif %}" data-bs-parent="#tabs">
+          <div class="accordion-body">
+            <div class="row g-3">
+              {% set stage_items = items|selectattr('stage','equalto',stage_key)|list %}
+              {% for it in stage_items %}
+                {% set ct = changes.get(it.id, "UNCHANGED") %}
+                <div class="col-12 col-lg-6">
+                  <div class="card card-hover">
+                    <div class="card-body">
+                      <div class="d-flex justify-content-between align-items-start gap-2">
+                        <div>
+                          <div class="fw-semibold">
+                            {{ (it.resolved_situs if it.resolved_situs else (it.address ~ ", " ~ it.city ~ ", " ~ it.state ~ " " ~ (it.zip or ""))) }}
+                          </div>
 
-    {% macro render_stage(stage_key, title) %}
-      <details {% if stage_key == "PRE_FORECLOSURE" %}open{% endif %}>
-        <summary>{{ title }}</summary>
-        <div class="content">
-          {% set stage_items = items|selectattr('stage','equalto',stage_key)|list %}
-          {% if stage_items|length == 0 %}
-            <div class="muted">No items in this section yet.</div>
-          {% else %}
-            {% for it in stage_items %}
-              {% set ct = changes.get(it.id, "UNCHANGED") %}
-              <div class="item">
-                <div class="row" style="justify-content:space-between;">
-                  <div class="addr">{{ it.address }}, {{ it.city }}, {{ it.state }} {{ it.zip or "" }}</div>
-                  <div>
-                    {% if ct == "NEW" %}<span class="tag new">NEW</span>
-                    {% elif ct == "REMOVED" %}<span class="tag removed">REMOVED</span>
-                    {% elif ct == "UPDATED" %}<span class="tag updated">UPDATED</span>
-                    {% else %}<span class="tag unchanged">UNCHANGED</span>
-                    {% endif %}
+                          <div class="muted small">
+                            APN:
+                            {% if it.apn %}
+                              {% if it.assessor_url %}
+                                <a href="{{ it.assessor_url }}" class="mono">{{ it.apn }}</a>
+                              {% else %}
+                                <a href="{{ assessor_parcel_url(it.apn) }}" class="mono">{{ it.apn }}</a>
+                              {% endif %}
+                            {% else %}
+                              <span class="mono">—</span>
+                            {% endif %}
+                            {% if it.record_date %} · Date: <span class="mono">{{ it.record_date }}</span>{% endif %}
+                          </div>
+
+                          {% if it.doc_type %}
+                            <div class="small mt-1"><span class="muted">Doc:</span> {{ it.doc_type }}</div>
+                          {% endif %}
+                        </div>
+
+                        <div>
+                          {% if ct == "NEW" %}
+                            <span class="badge badge-new">NEW</span>
+                          {% elif ct == "REMOVED" %}
+                            <span class="badge badge-removed">REMOVED</span>
+                          {% elif ct == "UPDATED" %}
+                            <span class="badge badge-updated">UPDATED</span>
+                          {% else %}
+                            <span class="badge text-bg-secondary">UNCHANGED</span>
+                          {% endif %}
+                        </div>
+                      </div>
+
+                      <div class="d-flex flex-wrap gap-2 mt-3">
+                        <!-- Maps: Apple Maps deep link -->
+                        <a class="btn btn-sm btn-outline-primary" href="{{ maps_url_for_item(it) }}">Maps</a>
+
+                        <!-- Zillow: only if we have a real street address -->
+                        {% set zurl = zillow_url_for_item(it) %}
+                        {% if zurl %}
+                          <a class="btn btn-sm btn-outline-secondary" href="{{ zurl }}">Zillow</a>
+                        {% else %}
+                          <span class="btn btn-sm btn-outline-secondary disabled" aria-disabled="true">Zillow (need address)</span>
+                        {% endif %}
+
+                        {% if it.source_url %}
+                          <a class="btn btn-sm btn-outline-dark" href="{{ it.source_url }}">Source</a>
+                        {% endif %}
+                      </div>
+
+                      {% if it.apn and not it.resolved_situs %}
+                        <div class="muted small mt-2">
+                          No situs address yet. Tap <b>Resolve APNs</b> (vacant land may not have one).
+                        </div>
+                      {% endif %}
+                    </div>
                   </div>
                 </div>
+              {% endfor %}
+            </div>
 
-                <div class="kv"><span class="muted">APN:</span> <b>{{ it.apn or "—" }}</b>{% if it.record_date %} <span class="muted">· Date:</span> <b>{{ it.record_date }}</b>{% endif %}</div>
-                {% if it.doc_type %}<div class="kv"><span class="muted">Doc:</span> {{ it.doc_type }}</div>{% endif %}
-
-                <div class="links">
-                  <a class="btn" target="_blank" href="{{ maps_url(it.address, it.city, it.state, it.zip) }}">Maps</a>
-                  <a class="btn" target="_blank" href="{{ zillow_url(it.address, it.city, it.state, it.zip) }}">Zillow</a>
-                  {% if it.source_url %}<a class="btn" target="_blank" href="{{ it.source_url }}">Source</a>{% endif %}
-                </div>
-              </div>
-            {% endfor %}
-          {% endif %}
+            {% if stage_items|length == 0 %}
+              <div class="muted">No items in this tab yet.</div>
+            {% endif %}
+          </div>
         </div>
-      </details>
-    {% endmacro %}
-
-    {{ render_stage("PRE_FORECLOSURE", "Recorder: Pre-Foreclosure") }}
-    {{ render_stage("FORECLOSURE_SALE", "Recorder: Foreclosure / Sale") }}
-    {{ render_stage("REO", "Recorder: REO / Bank-Owned") }}
-    {{ render_stage("TAX_DELINQUENCY", "Tax Delinquency: County Parcel List") }}
-    {{ render_stage("OTHER", "Other") }}
-
+      </div>
+      {% endfor %}
+    </div>
   {% endif %}
 {% endblock %}
