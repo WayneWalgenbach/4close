@@ -2,7 +2,6 @@ import csv
 import io
 import os
 import re
-import json
 import sqlite3
 from datetime import datetime, timezone
 from urllib.parse import quote_plus
@@ -11,21 +10,22 @@ import requests
 from bs4 import BeautifulSoup
 import pdfplumber
 
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 
 APP_DIR = os.path.dirname(__file__)
 DB_PATH = os.path.join(APP_DIR, "data", "app.db")
 
-# Humboldt County parcel list page (we try to discover latest PDF from here)
-TAX_LIST_PAGE = "https://www.humboldtcountynv.gov/213/Parcel-List"
-# Fallback if discovery fails (still works)
-TAX_LIST_PDF_FALLBACK = "https://www.humboldtcountynv.gov/DocumentCenter/View/8026/2025-Delinquent-Sale-Parcel-List"
+# Humboldt County Tax Auction parcel list (April 2026)
+TAX_LIST_PDF = "https://www.humboldtcountynv.gov/DocumentCenter/View/8386/2026-List-of-Parcels"
+
+# Humboldt County Assessor (APN -> parcel detail)
+ASSESSOR_BASE = "https://humboldt-search.gsacorp.io"
 
 STAGES = [
     ("PRE_FORECLOSURE", "Pre-Foreclosure"),
     ("FORECLOSURE_SALE", "Foreclosure / Sale"),
     ("REO", "REO / Bank-Owned"),
-    ("TAX_DELINQUENCY", "Tax Delinquency"),
+    ("TAX_DELINQUENCY", "Tax Delinquency (Auction)"),
     ("OTHER", "Other"),
 ]
 
@@ -43,9 +43,15 @@ def db():
     return conn
 
 
+def _table_cols(cur, table):
+    rows = cur.execute(f"PRAGMA table_info({table})").fetchall()
+    return {r["name"] for r in rows}
+
+
 def init_db():
     conn = db()
     cur = conn.cursor()
+
     cur.executescript(
         """
         PRAGMA journal_mode=WAL;
@@ -77,19 +83,33 @@ def init_db():
         );
         """
     )
+
+    # Lightweight migration: add columns if missing
+    cols = _table_cols(cur, "items")
+    if "assessor_url" not in cols:
+        cur.execute("ALTER TABLE items ADD COLUMN assessor_url TEXT")
+    if "resolved_situs" not in cols:
+        cur.execute("ALTER TABLE items ADD COLUMN resolved_situs TEXT")
+    if "resolved_at" not in cols:
+        cur.execute("ALTER TABLE items ADD COLUMN resolved_at TEXT")
+
     conn.commit()
     conn.close()
 
 
+@app.before_request
+def _boot():
+    init_db()
+
+
 # -----------------------
-# Helpers
+# Key/Hash for snapshot diffs
 # -----------------------
 def norm(s: str) -> str:
     return " ".join((s or "").strip().lower().split())
 
 
 def make_key(row) -> str:
-    # Best key: APN + stage. Fallback: normalized address + city.
     apn = norm(row["apn"] or "")
     addr = norm(row["address"])
     city = norm(row["city"])
@@ -100,6 +120,7 @@ def make_key(row) -> str:
 
 
 def make_hash(row) -> str:
+    # include resolved_situs so "Resolve APNs" can change items and show UPDATED
     parts = [
         row["stage"],
         row["apn"] or "",
@@ -110,66 +131,155 @@ def make_hash(row) -> str:
         row["record_date"] or "",
         row["doc_type"] or "",
         row["source_url"] or "",
+        row.get("assessor_url") or "",
+        row.get("resolved_situs") or "",
     ]
     return "|".join([norm(p) for p in parts])
 
 
-def maps_url(address, city, state, zip_):
-    q = f"{address}, {city}, {state} {zip_ or ''}".strip()
-    return f"https://www.google.com/maps/search/?api=1&query={quote_plus(q)}"
+# -----------------------
+# Maps/Zillow link builders
+# -----------------------
+def comgooglemaps_url(query: str) -> str:
+    # iPhone deep link to open Google Maps app directly
+    return f"comgooglemaps://?q={quote_plus(query)}"
 
 
-def zillow_url(address, city, state, zip_):
-    q = f"{address}, {city}, {state} {zip_ or ''}".strip()
+def web_maps_url(query: str) -> str:
+    # fallback web link
+    return f"https://www.google.com/maps/search/?api=1&query={quote_plus(query)}"
+
+
+def normalize_apn(apn: str) -> str:
+    return re.sub(r"\D", "", (apn or "").strip())
+
+
+def assessor_parcel_url(apn: str) -> str:
+    digits = normalize_apn(apn)
+    return f"{ASSESSOR_BASE}/parcel/{digits}" if digits else ASSESSOR_BASE
+
+
+def maps_url_for_item(it) -> str:
+    """
+    Priority:
+    1) resolved_situs -> open Google Maps app directly
+    2) street-like address -> open Google Maps app directly
+    3) APN -> open assessor parcel page (accurate, not a fake pin)
+    """
+    situs = (it["resolved_situs"] or "").strip()
+    if situs:
+        return comgooglemaps_url(situs)
+
+    addr = (it["address"] or "").strip()
+    if re.search(r"\b\d{1,6}\b", addr) and len(addr) >= 8:
+        q = f"{addr}, {it['city']}, {it['state']} {it['zip'] or ''}".strip()
+        return comgooglemaps_url(q)
+
+    apn = (it["apn"] or "").strip()
+    if apn:
+        return assessor_parcel_url(apn)
+
+    q = f"{addr}, {it['city']}, {it['state']}".strip()
+    return comgooglemaps_url(q)
+
+
+def zillow_url_for_item(it) -> str:
+    # Zillow often works best with a real address if we have it
+    q = (it["resolved_situs"] or "").strip()
+    if not q:
+        q = f"{it['address']}, {it['city']}, {it['state']} {it['zip'] or ''}".strip()
     return f"https://www.zillow.com/homes/{quote_plus(q)}_rb/"
 
 
 # -----------------------
-# Seed (only if no tax items yet)
+# Assessor resolver (APN -> situs)
 # -----------------------
-def seed_tax_examples_once():
+def resolve_situs_from_assessor(apn: str) -> dict:
+    """
+    Returns:
+      { ok: bool, situs: str, assessor_url: str, error?: str }
+    """
+    url = assessor_parcel_url(apn)
+    try:
+        r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return {"ok": False, "situs": "", "assessor_url": url, "error": f"HTTP {r.status_code}"}
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        text = soup.get_text("\n", strip=True)
+        lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+
+        situs_parts = []
+        for i, ln in enumerate(lines):
+            if ln == "Location" and i + 1 < len(lines):
+                situs_parts.append(lines[i + 1])
+                if i + 2 < len(lines) and ("," in lines[i + 2] or "NV" in lines[i + 2]):
+                    situs_parts.append(lines[i + 2])
+                break
+            if ln.startswith("Location "):
+                situs_parts.append(ln.replace("Location ", "", 1).strip())
+                if i + 1 < len(lines) and ("," in lines[i + 1] or "NV" in lines[i + 1]):
+                    situs_parts.append(lines[i + 1])
+                break
+
+        situs = ", ".join([p for p in situs_parts if p]).strip()
+
+        # If it's only city/state (no street number), don't pretend it's a precise pin
+        if situs and not re.search(r"\b\d{1,6}\b", situs):
+            return {"ok": False, "situs": "", "assessor_url": url}
+
+        # add default zip for Winnemucca if missing
+        if situs and "WINNEMUCCA" in situs.upper() and not re.search(r"\b\d{5}\b", situs):
+            situs = situs + " 89445"
+
+        return {"ok": bool(situs), "situs": situs, "assessor_url": url}
+    except Exception as e:
+        return {"ok": False, "situs": "", "assessor_url": url, "error": str(e)}
+
+
+def resolve_all_unresolved(limit: int = 40) -> dict:
+    """
+    Resolve up to `limit` items that have an APN but no resolved_situs yet.
+    """
     conn = db()
     cur = conn.cursor()
-    existing = cur.execute(
-        "SELECT COUNT(*) c FROM items WHERE stage='TAX_DELINQUENCY'"
-    ).fetchone()["c"]
-    if existing:
-        conn.close()
-        return
+    rows = cur.execute(
+        """
+        SELECT id, apn FROM items
+        WHERE apn IS NOT NULL AND TRIM(apn) <> ''
+          AND (resolved_situs IS NULL OR TRIM(resolved_situs) = '')
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
 
-    seed_path = os.path.join(APP_DIR, "seed_tax_examples.json")
-    if not os.path.exists(seed_path):
-        conn.close()
-        return
+    updated = 0
+    skipped = 0
 
-    data = json.load(open(seed_path, "r"))
-    for r in data:
+    for r in rows:
+        item_id = r["id"]
+        apn = r["apn"]
+        res = resolve_situs_from_assessor(apn)
+        now = datetime.now(timezone.utc).isoformat()
+
+        # always store assessor_url; store situs only if ok
         cur.execute(
             """
-            INSERT INTO items (stage, apn, address, city, state, zip, record_date, doc_type, source_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            UPDATE items
+            SET assessor_url=?, resolved_situs=?, resolved_at=?
+            WHERE id=?
             """,
-            (
-                r.get("stage") or "TAX_DELINQUENCY",
-                r.get("apn"),
-                r.get("address") or "Unknown address",
-                r.get("city") or "Winnemucca",
-                r.get("state") or "NV",
-                r.get("zip"),
-                r.get("record_date"),
-                r.get("doc_type"),
-                r.get("source_url"),
-            ),
+            (res.get("assessor_url"), res.get("situs") if res.get("ok") else "", now, item_id),
         )
+        if res.get("ok"):
+            updated += 1
+        else:
+            skipped += 1
 
     conn.commit()
     conn.close()
 
-
-@app.before_request
-def _boot():
-    init_db()
-    seed_tax_examples_once()
+    return {"processed": len(rows), "resolved": updated, "no_situs": skipped}
 
 
 # -----------------------
@@ -222,7 +332,7 @@ def diff_runs(new_run_id: int, old_run_id):
         ).fetchall()
         old_map = {r["key"]: (r["hash"], r["item_id"]) for r in old_rows}
 
-    changes = {}  # item_id -> change_type
+    changes = {}
     new_keys = set(new_map.keys())
     old_keys = set(old_map.keys())
 
@@ -232,135 +342,58 @@ def diff_runs(new_run_id: int, old_run_id):
         changes[old_map[k][1]] = "REMOVED"
     for k in new_keys & old_keys:
         new_hash, new_item_id = new_map[k]
-        old_hash, _old_item_id = old_map[k]
+        old_hash, _ = old_map[k]
         changes[new_item_id] = "UPDATED" if new_hash != old_hash else "UNCHANGED"
 
     items = cur.execute("SELECT * FROM items ORDER BY stage, city, address").fetchall()
     summary = {"NEW": 0, "REMOVED": 0, "UPDATED": 0, "UNCHANGED": 0}
     for it in items:
         ct = changes.get(it["id"], "UNCHANGED")
-        if ct in summary:
-            summary[ct] += 1
+        summary[ct] += 1
 
     conn.close()
     return items, changes, summary
 
 
 # -----------------------
-# Tax refresh (Humboldt county PDF)
+# Tax refresh (April 2026 PDF)
 # -----------------------
-def find_tax_pdf_url():
-    try:
-        r = requests.get(TAX_LIST_PAGE, timeout=20)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        # Heuristic: find first PDF link that looks like parcel/delinquent list
-        best = None
-        for a in soup.select("a[href]"):
-            href = (a.get("href") or "").strip()
-            text = (a.get_text() or "").strip().lower()
-            if ".pdf" not in href.lower():
-                continue
-            score = 0
-            if "parcel" in text or "parcel" in href.lower():
-                score += 2
-            if "delinquent" in text or "delinquent" in href.lower():
-                score += 2
-            if "sale" in text or "sale" in href.lower():
-                score += 1
-            if score >= 2:
-                best = href
-                break
-
-        if best:
-            if best.startswith("/"):
-                return "https://www.humboldtcountynv.gov" + best
-            return best
-    except Exception:
-        pass
-
-    return TAX_LIST_PDF_FALLBACK
-
-
-def parse_tax_pdf(pdf_bytes: bytes):
-    """
-    Best-effort parser:
-    - Extracts APNs like 12-3456-78
-    - Attempts to grab a nearby address line if present; otherwise uses 'Unknown address'
-    """
+def parse_tax_pdf_for_apns(pdf_bytes: bytes):
     apn_re = re.compile(r"\b\d{2}-\d{4}-\d{2}\b")
-    rows = []
-
+    found = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
             text = page.extract_text() or ""
-            lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-            for i, ln in enumerate(lines):
-                m = apn_re.search(ln)
-                if not m:
-                    continue
-                apn = m.group(0)
-
-                # Guess address from same line or the next few lines
-                after = ln.replace(apn, "").strip(" -:\t")
-                candidates = [after] + lines[i + 1 : i + 4]
-                address_guess = ""
-                for c in candidates:
-                    c2 = c.strip()
-                    if not c2:
-                        continue
-                    # Heuristic: has a street number
-                    if re.search(r"\b\d{1,6}\b", c2) and len(c2) >= 8:
-                        address_guess = c2
-                        break
-
-                rows.append(
-                    {
-                        "stage": "TAX_DELINQUENCY",
-                        "apn": apn,
-                        "address": address_guess or "Unknown address",
-                        "city": "Winnemucca",
-                        "state": "NV",
-                        "zip": "89445",
-                        "record_date": "",
-                        "doc_type": "Delinquent Tax Sale Parcel List",
-                        "source_url": find_tax_pdf_url(),
-                    }
-                )
-
-    # dedupe by APN
-    dedup = {}
-    for r in rows:
-        dedup[r["apn"]] = r
-    return list(dedup.values())
+            found.extend(apn_re.findall(text))
+    return sorted(set(found))
 
 
-def replace_tax_rows(rows):
+def replace_tax_rows(apns):
     """
-    Simple + reliable: wipe existing tax rows and re-insert current list.
-    This avoids needing a UNIQUE constraint for UPSERT.
+    Replace TAX_DELINQUENCY items with APN-only rows (then resolver fills situs).
     """
     conn = db()
     cur = conn.cursor()
     cur.execute("DELETE FROM items WHERE stage='TAX_DELINQUENCY'")
 
-    for r in rows:
+    for apn in apns:
         cur.execute(
             """
-            INSERT INTO items (stage, apn, address, city, state, zip, record_date, doc_type, source_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO items(stage, apn, address, city, state, zip, doc_type, source_url, assessor_url, resolved_situs, resolved_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
-                r["stage"],
-                r.get("apn"),
-                r.get("address") or "Unknown address",
-                r.get("city") or "Winnemucca",
-                r.get("state") or "NV",
-                r.get("zip") or "89445",
-                r.get("record_date") or "",
-                r.get("doc_type") or "",
-                r.get("source_url") or "",
+                "TAX_DELINQUENCY",
+                apn,
+                f"APN {apn} (resolve for situs)",
+                "Winnemucca",
+                "NV",
+                "89445",
+                "Parcel List for April 2026 Delinquent Tax Auction",
+                TAX_LIST_PDF,
+                assessor_parcel_url(apn),
+                "",
+                None,
             ),
         )
 
@@ -388,21 +421,22 @@ def index():
 
     return render_template(
         "index.html",
-        runs=runs,
         latest=latest,
         prev=prev,
         items=items,
         changes=changes,
         summary=summary,
-        maps_url=maps_url,
-        zillow_url=zillow_url,
+        stages=STAGES,
+        maps_url_for_item=maps_url_for_item,
+        zillow_url_for_item=zillow_url_for_item,
+        assessor_parcel_url=assessor_parcel_url,
     )
 
 
 @app.post("/run")
 def run_now():
     run_id = create_run_and_snapshot()
-    flash(f"Created run #{run_id}.", "success")
+    flash(f"Created snapshot run #{run_id}.", "success")
     return redirect(url_for("index"))
 
 
@@ -421,79 +455,10 @@ def import_csv_post():
     text = file.read().decode("utf-8", errors="replace")
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
-        flash("CSV has no header row.", "danger")
+        flash("CSV missing header row.", "danger")
         return redirect(url_for("import_csv"))
 
-    header_map = {h: h.lower().strip() for h in reader.fieldnames}
     lowered = [h.lower().strip() for h in reader.fieldnames]
     required = ["stage", "address", "city", "state"]
     if not all(r in lowered for r in required):
-        flash("CSV missing required headers: stage,address,city,state", "danger")
-        return redirect(url_for("import_csv"))
-
-    allowed = {s for s, _ in STAGES}
-
-    conn = db()
-    cur = conn.cursor()
-    inserted = 0
-
-    for row in reader:
-        r = {
-            header_map.get(k, k).lower().strip(): (v.strip() if isinstance(v, str) else v)
-            for k, v in row.items()
-        }
-        stage = (r.get("stage") or "OTHER").upper().strip()
-        if stage not in allowed:
-            stage = "OTHER"
-
-        cur.execute(
-            """
-            INSERT INTO items (stage, apn, address, city, state, zip, record_date, doc_type, source_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                stage,
-                (r.get("apn") or None),
-                r["address"],
-                r["city"],
-                r["state"],
-                (r.get("zip") or None),
-                (r.get("record_date") or None),
-                (r.get("doc_type") or None),
-                (r.get("source_url") or None),
-            ),
-        )
-        inserted += 1
-
-    conn.commit()
-    conn.close()
-
-    flash(f"Imported {inserted} rows. Now tap Create Snapshot (Compare).", "success")
-    return redirect(url_for("index"))
-
-
-@app.post("/tax/refresh")
-def tax_refresh():
-    try:
-        pdf_url = find_tax_pdf_url()
-        r = requests.get(pdf_url, timeout=30)
-        r.raise_for_status()
-        rows = parse_tax_pdf(r.content)
-        replace_tax_rows(rows)
-        flash(f"Tax list refreshed. Loaded {len(rows)} APNs from county PDF.", "success")
-    except Exception as e:
-        flash(f"Tax refresh failed: {e}", "danger")
-    return redirect(url_for("index"))
-
-
-@app.post("/reset")
-def reset_db():
-    if os.path.exists(DB_PATH):
-        os.remove(DB_PATH)
-    flash("Database reset. Reloading seed data.", "warning")
-    return redirect(url_for("index"))
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port, debug=False)
+        flash("CSV
