@@ -1,0 +1,57 @@
+[
+  {
+    "stage": "TAX_DELINQUENCY",
+    "apn": "16-0025-05",
+    "address": "1265 S Bridge St",
+    "city": "Winnemucca",
+    "state": "NV",
+    "zip": "89445",
+    "record_date": "",
+    "doc_type": "Delinquent Tax Sale Parcel List (example)",
+    "source_url": "https://www.humboldtcountynv.gov/DocumentCenter/View/8026/2025-Delinquent-Sale-Parcel-List"
+  },
+  {
+    "stage": "TAX_DELINQUENCY",
+    "apn": "06-0107-06",
+    "address": "4805 Savage Dr",
+    "city": "Winnemucca",
+    "state": "NV",
+    "zip": "89445",
+    "record_date": "",
+    "doc_type": "Delinquent Tax Sale Parcel List (example)",
+    "source_url": "https://www.humboldtcountynv.gov/DocumentCenter/View/8026/2025-Delinquent-Sale-Parcel-List"
+  },
+  {
+    "stage": "TAX_DELINQUENCY",
+    "apn": "06-0622-04",
+    "address": "3385 Warner Dr",
+    "city": "Winnemucca",
+    "state": "NV",
+    "zip": "89445",
+    "record_date": "",
+    "doc_type": "Delinquent Tax Sale Parcel List (example)",
+    "source_url": "https://www.humboldtcountynv.gov/DocumentCenter/View/8026/2025-Delinquent-Sale-Parcel-List"
+  },
+  {
+    "stage": "TAX_DELINQUENCY",
+    "apn": "13-0402-25",
+    "address": "6300 Nugget Dr",
+    "city": "Winnemucca",
+    "state": "NV",
+    "zip": "89445",
+    "record_date": "",
+    "doc_type": "Delinquent Tax Sale Parcel List (example)",
+    "source_url": "https://www.humboldtcountynv.gov/DocumentCenter/View/8026/2025-Delinquent-Sale-Parcel-List"
+  },
+  {
+    "stage": "TAX_DELINQUENCY",
+    "apn": "06-0091-05",
+    "address": "Mountain View Dr",
+    "city": "Winnemucca",
+    "state": "NV",
+    "zip": "89445",
+    "record_date": "",
+    "doc_type": "Delinquent Tax Sale Parcel List (example)",
+    "source_url": "https://www.humboldtcountynv.gov/DocumentCenter/View/8026/2025-Delinquent-Sale-Parcel-List"
+  }
+]

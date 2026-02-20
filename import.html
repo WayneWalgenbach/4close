@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1 class="h4 mb-3">Import Recorder Results (CSV)</h1>
+  <div class="card">
+    <div class="card-body">
+      <form method="post" enctype="multipart/form-data">
+        <div class="mb-3">
+          <label class="form-label">CSV file</label>
+          <input class="form-control" type="file" name="file" accept=".csv,text/csv">
+        </div>
+        <button class="btn btn-primary" type="submit">Import</button>
+        <a class="btn btn-outline-secondary" href="{{ url_for('index') }}">Back</a>
+      </form>
+      <hr/>
+      <div class="small">
+        <div class="fw-semibold mb-1">Expected headers</div>
+        <div class="mono">stage, apn, address, city, state, zip, record_date, doc_type, source_url</div>
+        <div class="muted mt-2">Stages supported:
+          {% for s,l in stages %}<span class="mono">{{s}}</span>{% if not loop.last %}, {% endif %}{% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

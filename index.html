@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+    <div>
+      <h1 class="h4 mb-1">Winnemucca / Humboldt County, NV</h1>
+      <div class="muted">Compares the latest run to the prior run: <span class="badge badge-new">NEW</span>, <span class="badge badge-removed">REMOVED</span>, <span class="badge badge-updated">UPDATED</span>.</div>
+    </div>
+    <form method="post" action="{{ url_for('run_now') }}">
+      <button class="btn btn-primary">Run Search</button>
+    </form>
+  </div>
+
+  <div class="row g-3 mb-4">
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-body">
+          <div class="d-flex justify-content-between">
+            <div>
+              <div class="muted">Latest run</div>
+              <div class="mono">{{ latest.id if latest else "—" }}</div>
+            </div>
+            <div>
+              <div class="muted">Previous run</div>
+              <div class="mono">{{ prev.id if prev else "—" }}</div>
+            </div>
+          </div>
+          <hr/>
+          <div class="d-flex flex-wrap gap-2">
+            <span class="badge badge-new">New: {{ summary["NEW"] }}</span>
+            <span class="badge badge-updated">Updated: {{ summary["UPDATED"] }}</span>
+            <span class="badge badge-removed">Removed: {{ summary["REMOVED"] }}</span>
+            <span class="badge text-bg-secondary">Unchanged: {{ summary["UNCHANGED"] }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-body">
+          <div class="muted mb-1">Configured sources</div>
+          <ul class="mb-0">
+            <li><b>Tax Delinquency</b> — seeded examples (replace with your parsed county list later)</li>
+            <li><b>Pre-Foreclosure / Foreclosure / REO</b> — import Recorder results as CSV</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% if not latest %}
+    <div class="alert alert-info">No runs yet. Click <b>Run Search</b> to create your first snapshot.</div>
+  {% else %}
+    <div class="accordion" id="tabs">
+      {% for stage_key, stage_name in [
+        ("PRE_FORECLOSURE","Pre-Foreclosure (Recorder import)"),
+        ("FORECLOSURE_SALE","Foreclosure / Sale (Recorder import)"),
+        ("REO","REO / Bank-Owned (Recorder import)"),
+        ("TAX_DELINQUENCY","Tax Delinquency (county list examples)"),
+        ("OTHER","Other")
+      ] %}
+      <div class="accordion-item">
+        <h2 class="accordion-header" id="h-{{stage_key}}">
+          <button class="accordion-button {% if stage_key != 'PRE_FORECLOSURE' %}collapsed{% endif %}" type="button" data-bs-toggle="collapse" data-bs-target="#c-{{stage_key}}">
+            {{ stage_name }}
+          </button>
+        </h2>
+        <div id="c-{{stage_key}}" class="accordion-collapse collapse {% if stage_key == 'PRE_FORECLOSURE' %}show{% endif %}" data-bs-parent="#tabs">
+          <div class="accordion-body">
+            <div class="row g-3">
+              {% set stage_items = items|selectattr('stage','equalto',stage_key)|list %}
+              {% for it in stage_items %}
+                {% set ct = changes.get(it.id, "UNCHANGED") %}
+                <div class="col-12 col-lg-6">
+                  <div class="card card-hover">
+                    <div class="card-body">
+                      <div class="d-flex justify-content-between align-items-start gap-2">
+                        <div>
+                          <div class="fw-semibold">{{ it.address }}, {{ it.city }}, {{ it.state }} {{ it.zip or "" }}</div>
+                          <div class="muted small">
+                            APN: <span class="mono">{{ it.apn or "—" }}</span>
+                            {% if it.record_date %} · Date: <span class="mono">{{ it.record_date }}</span>{% endif %}
+                          </div>
+                          {% if it.doc_type %}
+                            <div class="small mt-1"><span class="muted">Doc:</span> {{ it.doc_type }}</div>
+                          {% endif %}
+                        </div>
+                        <div>
+                          {% if ct == "NEW" %}
+                            <span class="badge badge-new">NEW</span>
+                          {% elif ct == "REMOVED" %}
+                            <span class="badge badge-removed">REMOVED</span>
+                          {% elif ct == "UPDATED" %}
+                            <span class="badge badge-updated">UPDATED</span>
+                          {% else %}
+                            <span class="badge text-bg-secondary">UNCHANGED</span>
+                          {% endif %}
+                        </div>
+                      </div>
+
+                      <div class="d-flex flex-wrap gap-2 mt-3">
+                        <a class="btn btn-sm btn-outline-primary" target="_blank" href="{{ maps_url(it.address, it.city, it.state, it.zip) }}">Maps</a>
+                        <a class="btn btn-sm btn-outline-secondary" target="_blank" href="{{ zillow_url(it.address, it.city, it.state, it.zip) }}">Zillow</a>
+                        {% if it.source_url %}
+                          <a class="btn btn-sm btn-outline-dark" target="_blank" href="{{ it.source_url }}">Source</a>
+                        {% endif %}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+
+            {% if stage_items|length == 0 %}
+              <div class="muted">No items in this tab yet.</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endblock %}
