@@ -5,15 +5,19 @@
     <div class="section-title">Actions</div>
 
     <div class="row">
-      <!-- Snapshot is global: compares DB "now" vs previous snapshot -->
       <form method="post" action="{{ url_for('run_now') }}" style="margin:0;">
         <button class="btn" type="submit">Create Snapshot (Compare)</button>
       </form>
 
-      <!-- Recorder pipeline is separate and obvious -->
       <a class="btn" href="{{ url_for('import_csv') }}">Import Recorder CSV</a>
 
-      <span class="muted">Snapshot ≠ fetch. Import adds Recorder rows. Snapshot compares runs.</span>
+      <form method="post" action="/tax/refresh" style="margin:0;">
+        <button class="btn" type="submit">Refresh Tax List (Humboldt PDF)</button>
+      </form>
+    </div>
+
+    <div class="muted" style="margin-top:10px;">
+      Import = Recorder rows. Refresh Tax = county parcel list. Snapshot = compare latest vs previous.
     </div>
 
     <div style="margin-top:10px;">
@@ -37,119 +41,59 @@
       <span class="tag removed">Removed: {{ summary["REMOVED"] }}</span>
       <span class="tag unchanged">Unchanged: {{ summary["UNCHANGED"] }}</span>
     </div>
-
-    <div class="muted" style="margin-top:10px;">
-      Recorder: import CSV → snapshot. Tax: shows whatever tax list is loaded (examples now).
-    </div>
   </div>
 
   {% if not latest %}
     <div class="box">
       <b>No snapshots yet.</b>
       <div class="muted" style="margin-top:6px;">
-        Tap <b>Create Snapshot (Compare)</b> to create your first run baseline.
+        Tap <b>Create Snapshot (Compare)</b> to create your baseline run.
       </div>
     </div>
   {% else %}
 
-    <!-- Recorder pipeline (separate, clear) -->
-    <details open>
-      <summary>Recorder pipeline: Pre-Foreclosure</summary>
-      <div class="content">
-        {% set stage_items = items|selectattr('stage','equalto','PRE_FORECLOSURE')|list %}
-        {% if stage_items|length == 0 %}
-          <div class="muted">No items yet. Use <b>Import Recorder CSV</b>.</div>
-        {% else %}
-          {% for it in stage_items %}
-            {% set ct = changes.get(it.id, "UNCHANGED") %}
-            <div class="item">
-              <div class="row" style="justify-content:space-between;">
-                <div class="addr">{{ it.address }}, {{ it.city }}, {{ it.state }} {{ it.zip or "" }}</div>
-                <div>
-                  {% if ct == "NEW" %}<span class="tag new">NEW</span>
-                  {% elif ct == "REMOVED" %}<span class="tag removed">REMOVED</span>
-                  {% elif ct == "UPDATED" %}<span class="tag updated">UPDATED</span>
-                  {% else %}<span class="tag unchanged">UNCHANGED</span>
-                  {% endif %}
+    {% macro render_stage(stage_key, title) %}
+      <details {% if stage_key == "PRE_FORECLOSURE" %}open{% endif %}>
+        <summary>{{ title }}</summary>
+        <div class="content">
+          {% set stage_items = items|selectattr('stage','equalto',stage_key)|list %}
+          {% if stage_items|length == 0 %}
+            <div class="muted">No items in this section yet.</div>
+          {% else %}
+            {% for it in stage_items %}
+              {% set ct = changes.get(it.id, "UNCHANGED") %}
+              <div class="item">
+                <div class="row" style="justify-content:space-between;">
+                  <div class="addr">{{ it.address }}, {{ it.city }}, {{ it.state }} {{ it.zip or "" }}</div>
+                  <div>
+                    {% if ct == "NEW" %}<span class="tag new">NEW</span>
+                    {% elif ct == "REMOVED" %}<span class="tag removed">REMOVED</span>
+                    {% elif ct == "UPDATED" %}<span class="tag updated">UPDATED</span>
+                    {% else %}<span class="tag unchanged">UNCHANGED</span>
+                    {% endif %}
+                  </div>
+                </div>
+
+                <div class="kv"><span class="muted">APN:</span> <b>{{ it.apn or "—" }}</b>{% if it.record_date %} <span class="muted">· Date:</span> <b>{{ it.record_date }}</b>{% endif %}</div>
+                {% if it.doc_type %}<div class="kv"><span class="muted">Doc:</span> {{ it.doc_type }}</div>{% endif %}
+
+                <div class="links">
+                  <a class="btn" target="_blank" href="{{ maps_url(it.address, it.city, it.state, it.zip) }}">Maps</a>
+                  <a class="btn" target="_blank" href="{{ zillow_url(it.address, it.city, it.state, it.zip) }}">Zillow</a>
+                  {% if it.source_url %}<a class="btn" target="_blank" href="{{ it.source_url }}">Source</a>{% endif %}
                 </div>
               </div>
+            {% endfor %}
+          {% endif %}
+        </div>
+      </details>
+    {% endmacro %}
 
-              <div class="kv"><span class="muted">APN:</span> <b>{{ it.apn or "—" }}</b>{% if it.record_date %} <span class="muted">· Date:</span> <b>{{ it.record_date }}</b>{% endif %}</div>
-              {% if it.doc_type %}<div class="kv"><span class="muted">Doc:</span> {{ it.doc_type }}</div>{% endif %}
+    {{ render_stage("PRE_FORECLOSURE", "Recorder: Pre-Foreclosure") }}
+    {{ render_stage("FORECLOSURE_SALE", "Recorder: Foreclosure / Sale") }}
+    {{ render_stage("REO", "Recorder: REO / Bank-Owned") }}
+    {{ render_stage("TAX_DELINQUENCY", "Tax Delinquency: County Parcel List") }}
+    {{ render_stage("OTHER", "Other") }}
 
-              <div class="links">
-                <a class="btn" target="_blank" href="{{ maps_url(it.address, it.city, it.state, it.zip) }}">Maps</a>
-                <a class="btn" target="_blank" href="{{ zillow_url(it.address, it.city, it.state, it.zip) }}">Zillow</a>
-                {% if it.source_url %}<a class="btn" target="_blank" href="{{ it.source_url }}">Source</a>{% endif %}
-              </div>
-            </div>
-          {% endfor %}
-        {% endif %}
-      </div>
-    </details>
-
-    <details>
-      <summary>Recorder pipeline: Foreclosure / Sale</summary>
-      <div class="content">
-        {% set stage_items = items|selectattr('stage','equalto','FORECLOSURE_SALE')|list %}
-        {% if stage_items|length == 0 %}
-          <div class="muted">No items yet. Use <b>Import Recorder CSV</b>.</div>
-        {% else %}
-          {% for it in stage_items %}
-            {% set ct = changes.get(it.id, "UNCHANGED") %}
-            <div class="item">
-              <div class="row" style="justify-content:space-between;">
-                <div class="addr">{{ it.address }}, {{ it.city }}, {{ it.state }} {{ it.zip or "" }}</div>
-                <div>
-                  {% if ct == "NEW" %}<span class="tag new">NEW</span>
-                  {% elif ct == "REMOVED" %}<span class="tag removed">REMOVED</span>
-                  {% elif ct == "UPDATED" %}<span class="tag updated">UPDATED</span>
-                  {% else %}<span class="tag unchanged">UNCHANGED</span>
-                  {% endif %}
-                </div>
-              </div>
-
-              <div class="kv"><span class="muted">APN:</span> <b>{{ it.apn or "—" }}</b>{% if it.record_date %} <span class="muted">· Date:</span> <b>{{ it.record_date }}</b>{% endif %}</div>
-              {% if it.doc_type %}<div class="kv"><span class="muted">Doc:</span> {{ it.doc_type }}</div>{% endif %}
-
-              <div class="links">
-                <a class="btn" target="_blank" href="{{ maps_url(it.address, it.city, it.state, it.zip) }}">Maps</a>
-                <a class="btn" target="_blank" href="{{ zillow_url(it.address, it.city, it.state, it.zip) }}">Zillow</a>
-                {% if it.source_url %}<a class="btn" target="_blank" href="{{ it.source_url }}">Source</a>{% endif %}
-              </div>
-            </div>
-          {% endfor %}
-        {% endif %}
-      </div>
-    </details>
-
-    <details>
-      <summary>Recorder pipeline: REO / Bank-Owned</summary>
-      <div class="content">
-        {% set stage_items = items|selectattr('stage','equalto','REO')|list %}
-        {% if stage_items|length == 0 %}
-          <div class="muted">No items yet. Use <b>Import Recorder CSV</b>.</div>
-        {% else %}
-          {% for it in stage_items %}
-            {% set ct = changes.get(it.id, "UNCHANGED") %}
-            <div class="item">
-              <div class="row" style="justify-content:space-between;">
-                <div class="addr">{{ it.address }}, {{ it.city }}, {{ it.state }} {{ it.zip or "" }}</div>
-                <div>
-                  {% if ct == "NEW" %}<span class="tag new">NEW</span>
-                  {% elif ct == "REMOVED" %}<span class="tag removed">REMOVED</span>
-                  {% elif ct == "UPDATED" %}<span class="tag updated">UPDATED</span>
-                  {% else %}<span class="tag unchanged">UNCHANGED</span>
-                  {% endif %}
-                </div>
-              </div>
-
-              <div class="kv"><span class="muted">APN:</span> <b>{{ it.apn or "—" }}</b>{% if it.record_date %} <span class="muted">· Date:</span> <b>{{ it.record_date }}</b>{% endif %}</div>
-              {% if it.doc_type %}<div class="kv"><span class="muted">Doc:</span> {{ it.doc_type }}</div>{% endif %}
-
-              <div class="links">
-                <a class="btn" target="_blank" href="{{ maps_url(it.address, it.city, it.state, it.zip) }}">Maps</a>
-                <a class="btn" target="_blank" href="{{ zillow_url(it.address, it.city, it.state, it.zip) }}">Zillow</a>
-                {% if it.source_url %}<a class="btn" target="_blank" href="{{ it.source_url }}">Source</a>{% endif %}
-              </div>
-            </
+  {% endif %}
+{% endblock %}
