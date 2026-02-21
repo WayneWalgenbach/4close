@@ -1,18 +1,25 @@
 {% extends "base.html" %}
 {% block content %}
-  <h1 class="h4 mb-3">Import CSV</h1>
+<h2>Import CSV</h2>
 
-  <form method="post" enctype="multipart/form-data" action="/import">
-    <div class="mb-3">
-      <input class="form-control" type="file" name="file" accept=".csv" required>
-    </div>
-    <button class="btn btn-primary" type="submit">Upload CSV</button>
-    <a class="btn btn-outline-secondary" href="/">Back</a>
-  </form>
-
-  <hr>
-  <div class="small text-muted">
-    Required headers: <b>stage,address,city,state</b><br>
-    Optional: apn, zip, record_date, doc_type, source_url
+<form method="POST" enctype="multipart/form-data">
+  <div class="mb-3">
+    <input 
+      type="file" 
+      name="file" 
+      class="form-control" 
+      accept=".csv" 
+      required>
   </div>
+
+  <button type="submit" class="btn btn-primary">Upload CSV</button>
+  <a href="{{ url_for('index') }}" class="btn btn-secondary">Back</a>
+</form>
+
+<hr>
+
+<p class="text-muted">
+  Required headers: <b>stage,address,city,state</b><br>
+  Optional: apn, zip, record_date, doc_type, source_url
+</p>
 {% endblock %}
